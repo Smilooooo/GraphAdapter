@@ -231,6 +231,36 @@ class GraphLearner(nn.Module):
         return self.beta_it * self.base_text_features + (1-self.beta_it) * graph_o_t.squeeze(), img_feature
 
 
+def _get_base_text_features(cfg, classnames, clip_model, text_encoder):
+    device = next(text_encoder.parameters()).device
+    if clip_model.dtype == torch.float16:
+        text_encoder = text_encoder.cuda()
+    # text_encoder = text_encoder.cuda()
+    dataset = cfg.DATASET.NAME
+
+    if dataset == "ImageNet":
+        TEMPLATES = IMAGENET_TEMPLATES_SELECT
+    else:
+        TEMPLATES = []
+    TEMPLATES += [CUSTOM_TEMPLATES[dataset]]
+
+    with torch.no_grad():
+        text_embeddings = []
+        for text in classnames:
+            tokens = clip.tokenize([template.format(text) for template in TEMPLATES])
+            tokens = tokens.to(device)
+            # print("=============", tokens.dtype, clip_model.dtype)
+              # tokenized prompts are indices
+            embeddings = clip_model.token_embedding(tokens).type(clip_model.dtype)
+            if clip_model.dtype == torch.float16:
+                text_embeddings.append(text_encoder(embeddings.cuda(), tokens.cuda()))  # not support float16 on cpu
+            else:
+                text_embeddings.append(text_encoder(embeddings.cuda(), tokens.cuda()))
+    text_embeddings = torch.stack(text_embeddings).mean(1)
+    text_encoder = text_encoder.to(device)
+    return text_embeddings.to(device)
+
+
 
 def _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loader_x):
     device = next(img_encoder.parameters()).device
