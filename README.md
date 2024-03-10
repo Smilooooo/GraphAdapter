@@ -1,3 +1,5 @@
+![Uploading image.png…]()
+
 # GraphAdapter: Tuning Vision-Language Models With Dual Knowledge Graph
 The efficient tuning method for VLMs
 
@@ -7,7 +9,7 @@ University of Science and Technology of China (USTC), National University of Sin
 
 [![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](https://arxiv.org/abs/2309.13625)
 
-## New!!!
+##  :bookmark:  New!!!
 | 2023-09-26  | The Arxiv version has been released | 
 
 | 2023-12-09  | Then basic code starts to be released |
@@ -19,7 +21,7 @@ University of Science and Technology of China (USTC), National University of Sin
 </p>
 
 
-** Cite US **
+## 📌 Cite US 
 If this work is helpful to you, please cite us:
 ```
 @article{li2024graphadapter,
@@ -32,5 +34,5 @@ If this work is helpful to you, please cite us:
 ```
 
 
-** Acknowledges**
+## Acknowledges
 The code is implemented based on the excellent work [CoOp](https://github.com/KaiyangZhou/CoOp)
