@@ -12,6 +12,25 @@ University of Science and Technology of China (USTC), National University of Sin
 
 | 2023-12-09  | Then basic code starts to be released |
 
+| 2024-03-10  | Full code has been initially released |
+
 <p align="center">
   <img src="./figs/GraphAdapter.png" alt="image" style="width:1000px;">
 </p>
+
+
+** Cite US **
+If this work is helpful to you, please cite us:
+```
+@article{li2024graphadapter,
+  title={Graphadapter: Tuning vision-language models with dual knowledge graph},
+  author={Li, Xin and Lian, Dongze and Lu, Zhihe and Bai, Jiawang and Chen, Zhibo and Wang, Xinchao},
+  journal={Advances in Neural Information Processing Systems},
+  volume={36},
+  year={2024}
+}
+```
+
+
+** Acknowledges**
+The code is implemented based on the excellent work [CoOp](https://github.com/KaiyangZhou/CoOp)
