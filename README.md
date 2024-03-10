@@ -1,5 +1,6 @@
-[GraphAdapter](https://github.com/lixinustc/GraphAdapter/assets/92313416/624d7b0f-7e50-4e9b-b987-76b9316e81b5)
-
+<p align="center">
+  <img src="[./figs/GraphAdapter.png](https://github.com/lixinustc/GraphAdapter/assets/92313416/624d7b0f-7e50-4e9b-b987-76b9316e81b5)" alt="image" style="width:1000px;">
+</p>
 
 # GraphAdapter: Tuning Vision-Language Models With Dual Knowledge Graph
 The efficient tuning method for VLMs
