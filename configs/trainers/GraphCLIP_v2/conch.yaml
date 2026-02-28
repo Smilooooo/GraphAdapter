@@ -1,0 +1,59 @@
+# =============================================================================
+# GraphCLIP v2 - CONCH Backbone
+# =============================================================================
+# CONCH: A Vision-Language Foundation Model for Computational Pathology
+# Pre-trained on 1.17M pathology image-caption pairs + PubMed
+# Paper: https://www.nature.com/articles/s41591-024-02856-4
+# HuggingFace: MahmoodLab/CONCH (GATED - requires authentication)
+#
+# IMPORTANT: CONCH requires HuggingFace authentication:
+#   1. Accept the license at: https://huggingface.co/MahmoodLab/CONCH
+#   2. Set environment variable: $env:HF_TOKEN = "your_token_here"
+#   3. Or run: huggingface-cli login
+#
+# Use: python train.py --trainer GraphCLIP_v2 --config-file configs/trainers/GraphCLIP_v2/conch.yaml ...
+
+DATALOADER:
+  TRAIN_X:
+    BATCH_SIZE: 128          # Smaller batch due to larger model / higher resolution
+  TEST:
+    BATCH_SIZE: 64
+  NUM_WORKERS: 8
+
+INPUT:
+  SIZE: (448, 448)           # CONCH requires 448x448 (paper: "image size to 448×448 pixels")
+  INTERPOLATION: "bicubic"
+  # CONCH uses ImageNet normalization (NOT OpenAI CLIP)
+  # Source: https://github.com/mahmoodlab/CONCH/blob/main/conch/open_clip_custom/constants.py
+  #   IMAGENET_DATASET_MEAN = (0.485, 0.456, 0.406)
+  #   IMAGENET_DATASET_STD = (0.229, 0.224, 0.225)
+  PIXEL_MEAN: [0.485, 0.456, 0.406]
+  PIXEL_STD: [0.229, 0.224, 0.225]
+  # Paper: "larger images were first resized along the shorter edge and center-cropped"
+  # Training: random_resized_crop is acceptable augmentation
+  # Inference: Dassl automatically uses resize → center_crop (matches paper requirement)
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+OPTIM:
+  NAME: "adamw"
+  LR: 0.0005                 # Lower LR for larger model
+  MAX_EPOCH: 25
+  LR_SCHEDULER: "cosine"
+  WARMUP_EPOCH: 2
+  WARMUP_TYPE: "constant"
+  WARMUP_CONS_LR: 1e-6
+
+TRAIN:
+  PRINT_FREQ: 5
+
+MODEL:
+  BACKBONE:
+    NAME: "conch"            # Key from MODEL_CONFIGS in model_registry.py
+    # These are looked up automatically from MODEL_CONFIGS:
+    # FRAMEWORK: "conch"
+    # HUB_NAME: "MahmoodLab/CONCH"
+    # FEATURE_DIM: 512
+
+TRAINER:
+  COOP:
+    PREC: "fp32"

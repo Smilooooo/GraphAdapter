@@ -1,0 +1,48 @@
+# =============================================================================
+# GraphCLIP v2 - PLIP Backbone
+# =============================================================================
+# PLIP: Pathology Language and Image Pre-Training
+# Pre-trained on 200K pathology image-text pairs from Twitter
+# Paper: https://www.nature.com/articles/s41591-023-02504-3
+# HuggingFace: vinid/plip
+#
+# Use: python train.py --trainer GraphCLIP_v2 --config-file configs/trainers/GraphCLIP_v2/plip.yaml ...
+
+DATALOADER:
+  TRAIN_X:
+    BATCH_SIZE: 256
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 8
+
+INPUT:
+  SIZE: (224, 224)
+  INTERPOLATION: "bicubic"
+  # PLIP uses OpenAI CLIP normalization (it's finetuned from CLIP)
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+OPTIM:
+  NAME: "adamw"
+  LR: 0.001
+  MAX_EPOCH: 25
+  LR_SCHEDULER: "cosine"
+  WARMUP_EPOCH: 1
+  WARMUP_TYPE: "constant"
+  WARMUP_CONS_LR: 1e-5
+
+TRAIN:
+  PRINT_FREQ: 5
+
+MODEL:
+  BACKBONE:
+    NAME: "plip"             # Key from MODEL_CONFIGS in model_registry.py
+    # These are looked up automatically from MODEL_CONFIGS:
+    # FRAMEWORK: "transformers"
+    # HUB_NAME: "vinid/plip"
+    # FEATURE_DIM: 512
+
+TRAINER:
+  COOP:
+    PREC: "fp32"             # transformers models prefer fp32

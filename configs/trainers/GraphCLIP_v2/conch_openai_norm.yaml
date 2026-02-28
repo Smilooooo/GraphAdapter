@@ -1,0 +1,46 @@
+# =============================================================================
+# GraphCLIP v2 - CONCH Backbone (OpenAI CLIP Normalization Variant)
+# =============================================================================
+# Alternative config using OpenAI CLIP normalization instead of ImageNet.
+# Use this to compare with conch.yaml (ImageNet normalization).
+#
+# CONCH repository defines both - test empirically which works better.
+# Compare results with your supervisor's colleague's implementation.
+#
+# HuggingFace: MahmoodLab/CONCH (GATED - requires authentication)
+
+DATALOADER:
+  TRAIN_X:
+    BATCH_SIZE: 128
+  TEST:
+    BATCH_SIZE: 64
+  NUM_WORKERS: 8
+
+INPUT:
+  SIZE: (448, 448)
+  INTERPOLATION: "bicubic"
+  # OpenAI CLIP normalization (alternative to ImageNet)
+  # Source: conch/open_clip_custom/constants.py - OPENAI_DATASET_MEAN/STD
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+OPTIM:
+  NAME: "adamw"
+  LR: 0.0005
+  MAX_EPOCH: 25
+  LR_SCHEDULER: "cosine"
+  WARMUP_EPOCH: 2
+  WARMUP_TYPE: "constant"
+  WARMUP_CONS_LR: 1e-6
+
+TRAIN:
+  PRINT_FREQ: 5
+
+MODEL:
+  BACKBONE:
+    NAME: "conch"
+
+TRAINER:
+  COOP:
+    PREC: "fp32"

@@ -1,0 +1,39 @@
+# =============================================================================
+# GraphCLIP v2 - OpenAI CLIP RN50 Backbone (baseline for comparison)
+# =============================================================================
+# Use: python train.py --trainer GraphCLIP_v2 --config-file configs/trainers/GraphCLIP_v2/rn50.yaml ...
+
+DATALOADER:
+  TRAIN_X:
+    BATCH_SIZE: 256          # Batch size for training
+  TEST:
+    BATCH_SIZE: 100          # Batch size for evaluation
+  NUM_WORKERS: 8             # DataLoader workers
+
+INPUT:
+  SIZE: (224, 224)           # Input image resolution
+  INTERPOLATION: "bicubic"   # Resize interpolation method
+  # OpenAI CLIP normalization values
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+OPTIM:
+  NAME: "adamw"              # Optimizer (adam, adamw, sgd)
+  LR: 0.001                  # Learning rate
+  MAX_EPOCH: 25              # Training epochs
+  LR_SCHEDULER: "cosine"     # LR decay schedule
+  WARMUP_EPOCH: 1            # Warmup epochs
+  WARMUP_TYPE: "constant"
+  WARMUP_CONS_LR: 1e-5       # Warmup learning rate
+
+TRAIN:
+  PRINT_FREQ: 5              # Print every N batches
+
+MODEL:
+  BACKBONE:
+    NAME: "RN50"             # OpenAI CLIP ResNet-50
+
+TRAINER:
+  COOP:
+    PREC: "fp16"             # Precision: fp16, fp32, or amp
