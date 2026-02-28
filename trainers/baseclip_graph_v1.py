@@ -96,6 +96,20 @@ def cal_edge_emb(x, p=2, dim=1):   # v1_graph---taking the similairty by
     ''' 
     x: (n,K)   [m+1, 1000, 1024]
     return: (n^2, K)
+
+    Computes the similarity matrix that is also the adjacency matrix
+    1. Normalize the feature vectors
+    2. Compute the similarity by matrix multiplication (batch-wise)
+    3. Return the adjacency matrix
+
+    Same as the function cal_similarity but for batched inputs
+    Input:
+    x: (batch_size, n, K)
+    Output:
+    A: (batch_size, n, n)
+
+    n -- number of nodes
+    K -- feature dimension
     '''
     x = F.normalize(x, p=p, dim=dim)    #[m+1, 1000, 1024], [100, 1024, 101]
     x_c = x
@@ -121,7 +135,7 @@ class GraphConvolution(nn.Module):
         self.bias = bias
         self.hidden_dim = 512
         self.class_num = class_num
-        self.gcn_weights = nn.Parameter(torch.ones(self.hidden_dim, self.hidden_dim))
+        self.gcn_weights = nn.Parameter(torch.ones(self.hidden_dim, self.hidden_dim)) 
         if self.bias:
             self.gcn_bias = nn.Parameter(torch.zeros(class_num, self.hidden_dim))
            
@@ -135,15 +149,15 @@ class GraphConvolution(nn.Module):
         #     self.gcn_bias.data.uniform_(-stdv, stdv)
 
     def forward(self, feat, adj):
-        x = feat        #[100, 1024, 101]
+        x = feat        #[100, 1024, 101] more likely to be [100, 512, 101] since hidden dim is 512
         node_size = adj.size()[1]  
-        adj = torch.clip(adj, min=0.0)
-        I = torch.eye(node_size, device='cuda').unsqueeze(dim=0).to(self.device)
+        adj = torch.clip(adj, min=0.0) # Remove negative weights
+        I = torch.eye(node_size, device='cuda').unsqueeze(dim=0).to(self.device) # Adds self loops
         adj = adj + I      # [1000, m+1, m+1]
-        adj = graph_norm_ours(adj, batch=True, self_loop=True, symmetric=True)  #[1000, m+1, m+1]
+        adj = graph_norm_ours(adj, batch=True, self_loop=True, symmetric=True)  #[1000, m+1, m+1] Normalizes the adjacency matrix so that high degrees don't take over
         x = x.transpose(1, 2)
-        pre_sup = torch.matmul(x, self.gcn_weights)  # [m+1, 1000, 1024]
-        output = torch.matmul(adj, pre_sup) #[1000, m+1, 1024]
+        pre_sup = torch.matmul(x, self.gcn_weights)  # [m+1, 1000, 1024] Linear transformation before message passing
+        output = torch.matmul(adj, pre_sup) #[1000, m+1, 1024] Message passing
 
         if self.bias:
             output += self.gcn_bias.unsqueeze(1)
@@ -163,7 +177,7 @@ class TextEncoder(nn.Module):
         self.dtype = clip_model.dtype
 
     def forward(self, prompts, tokenized_prompts):
-        x = prompts + self.positional_embedding.type(self.dtype)
+        x = prompts + self.positional_embedding.type(self.dtype) # Prompts are already embedded
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
@@ -187,11 +201,12 @@ class GraphLearner(nn.Module):
         self.register_buffer("base_text_features", base_text_features) #[1000, 1024]
         self.register_buffer("base_img_features", base_img_features)
         # self.alpha_it = cfg.TRAINER.GRAPHADAPTER.ALPHA
-        self.alpha_it = 0.7
-        self.beta_it = cfg.TRAINER.GRAPHADAPTER.BETA
+        self.alpha_it = 0.7 # alpha weight how much z'_t and z_t contribute to the final text feature
+        self.beta_it = cfg.TRAINER.GRAPHADAPTER.BETA # beta weight how much z_tt and z_vt contributes to z'_t
         self.node_num = 1
         # self.alpha_it = 
         self.hidden_dim = 1
+        # GCN for text-to-text and image-to-text
         self.GCN_tt = GraphConvolution(self.hidden_dim, name='metagraph', device=self.device, class_num=base_text_features.size()[0])
         self.GCN_it = GraphConvolution(self.hidden_dim, name='metagraph', device=self.device, class_num=base_text_features.size()[0])
 
@@ -203,20 +218,22 @@ class GraphLearner(nn.Module):
     def forward(self, img_feature):
         sigma=2.0
 
+        # divide nodes into 4 clusters [1 (batch), 25 (groups), 4 (classes in the group) , 512 (features)]
         with torch.no_grad():
             node_cluster_t = self.base_text_features.view(1, self.base_text_features.size()[0]//4, 4, self.base_text_features.size()[1])
             node_cluster_i = self.base_img_features.view(1, self.base_img_features.size()[0]//4, 4, self.base_img_features.size()[1])
            
         graph_o_t_all = []
             
-        for index in range(4):
+        for index in range(4): # each cluster 
             # print("========index", index)
             with torch.no_grad():
-                inputs_text = self.base_text_features.unsqueeze(dim=1)    #[100, 1, 1024]
-                inputs_img = img_feature.unsqueeze(dim=1)
+                inputs_text = self.base_text_features.unsqueeze(dim=1)    #[100, 1, 1024] These are the query nodes
+                inputs_img = img_feature.unsqueeze(dim=1) # adds a dimension for concatenation #[100, 1, 1024]
+                # Creating 4 sets taking the 0, 1, 2, 3rd class from each group
                 node_cluster_tt =  node_cluster_t[:, :, index, :].repeat(inputs_text.size()[0], 1, 1)  #[100, 100, 1024] t->t
                 node_cluster_it =  node_cluster_i[:, :, index, :].repeat(inputs_text.size()[0], 1, 1)  # i -> t
-                feat_tt = torch.cat([inputs_text, node_cluster_tt], dim=1) 
+                feat_tt = torch.cat([inputs_text, node_cluster_tt], dim=1) # here they query nodes are concatenated with the cluster nodes [100, 25+1, 1024]
                 feat_it = torch.cat([inputs_text, node_cluster_it], dim=1) 
                 feat_tt = feat_tt.transpose(1, 2).detach()
                 feat_it = feat_it.transpose(1, 2).detach()
@@ -272,8 +289,8 @@ def _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loa
         img_feature = []
         labels = []
         for epch in range(10):
-            for batch_idx, batch in enumerate(train_loader_x):
-                image = batch["img"]
+            for batch_idx, batch in enumerate(train_loader_x): # Each call give new augmented data
+                image = batch["img"] # Augmented Data
                 label = batch["label"]
                 image = image.cuda()
                 label = label.cuda()
@@ -301,16 +318,17 @@ def _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loa
 class CustomCLIP(nn.Module):
     def __init__(self, cfg, classnames, clip_model, train_loader_x):
         super().__init__()
-        self.image_encoder = clip_model.visual
-        self.logit_scale = clip_model.logit_scale
-        self.dtype = clip_model.dtype   # float16
-        text_encoder = TextEncoder(clip_model)
-        img_encoder = self.image_encoder
+        self.image_encoder = clip_model.visual # CLIP's image encoder
+        self.logit_scale = clip_model.logit_scale # CLIP's logit scale, temperature parameter
+        self.dtype = clip_model.dtype   # float16 
+        text_encoder = TextEncoder(clip_model) # Custom text encoder that outputs text features given embedded prompts
+        img_encoder = self.image_encoder 
+        # base features to avg and then use as nodes in the graph
         base_text_features = _get_base_text_features(cfg, classnames, clip_model, text_encoder)
         base_img_features = _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loader_x)
        
 
-        self.graph_learner = GraphLearner(cfg, classnames, clip_model, base_text_features, base_img_features)
+        self.graph_learner = GraphLearner(cfg, classnames, clip_model, base_text_features, base_img_features) # unfrozen graph learner
 
     def forward(self, image):
         try:
@@ -318,13 +336,14 @@ class CustomCLIP(nn.Module):
         except:
             image_features = self.image_encoder(image.float()).detach()
 
-    
+        # Refine features using graph learner (trainable)
         text_features, image_features = self.graph_learner(image_features)
        
-
+        # Normalize features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
+        # Compute logits
         logit_scale = self.logit_scale.exp()
         logits = logit_scale * image_features @ text_features.t()
 
@@ -332,7 +351,7 @@ class CustomCLIP(nn.Module):
 
 
 @TRAINER_REGISTRY.register()
-class GraphCLIP_v1(TrainerX):
+class GraphCLIP_v1(TrainerX): # TrainerX implements basic training loop
     def check_cfg(self, cfg):
         assert cfg.TRAINER.COOP.PREC in ["fp16", "fp32", "amp"]
     
@@ -340,16 +359,18 @@ class GraphCLIP_v1(TrainerX):
         cfg = self.cfg
         classnames = self.dm.dataset.classnames
 
+        # Load CLIP
         print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
         clip_model = load_clip_to_cpu(cfg)
         clip_model.to(self.device)
 
         
-
+        # Convert from float32 to float16 if needed
         if cfg.TRAINER.COOP.PREC == "fp32" or cfg.TRAINER.COOP.PREC == "amp":
             # CLIP's default precision is fp16
             clip_model.float()
 
+        # Build custom CLIP model which includes getting the CLIP embeddings for every class and storing them 
         print("Building custom CLIP")
         self.model = CustomCLIP(cfg, classnames, clip_model, self.train_loader_x).cuda()
         # for key, value in self.model.named_parameters():
@@ -360,20 +381,21 @@ class GraphCLIP_v1(TrainerX):
             if "graph_learner" not in name:
                 param.requires_grad_(False)
 
+        # Enable gradients for graph learner since this is the only part we train
         for param in self.model.graph_learner.parameters():
             param.requires_grad_(True)
 
-
+        # Optionally load pretrained weights
         if cfg.MODEL.INIT_WEIGHTS:
             load_pretrained_weights(self.model.graph_learner, cfg.MODEL.INIT_WEIGHTS)
 
         self.model.to(self.device)
         self.model.float()
         # NOTE: only give prompt_learner to the optimizer
-        self.optim = build_optimizer(model=self.model.graph_learner, optim_cfg=cfg.OPTIM)
+        self.optim = build_optimizer(model=self.model.graph_learner, optim_cfg=cfg.OPTIM) # builds optimizer from config
     #    , optim_cfg, param_groups=None
-        self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
-        self.register_model("graph_learner", self.model.graph_learner, self.optim, self.sched)
+        self.sched = build_lr_scheduler(self.optim, cfg.OPTIM) # builds lr scheduler from config
+        self.register_model("graph_learner", self.model.graph_learner, self.optim, self.sched) # function from superclass to register model for saving/loading
 
         self.scaler = GradScaler() if cfg.TRAINER.COOP.PREC == "amp" else None
 
@@ -392,7 +414,7 @@ class GraphCLIP_v1(TrainerX):
     
         if prec == "amp":
             with autocast():
-                output = self.model(image)
+                output = self.model(image) # forward pass
                 loss = F.cross_entropy(output, label)
             self.optim.zero_grad()
             self.scaler.scale(loss).backward()
@@ -401,7 +423,7 @@ class GraphCLIP_v1(TrainerX):
         else:
             output = self.model(image)
             loss = F.cross_entropy(output, label)
-            self.model_backward_and_update(loss)
+            self.model_backward_and_update(loss) # from superclass TrainerX
 
         loss_summary = {
             "loss": loss.item(),
@@ -409,7 +431,7 @@ class GraphCLIP_v1(TrainerX):
         }
 
         if (self.batch_idx + 1) == self.num_batches:
-            self.update_lr()
+            self.update_lr() # from superclass TrainerX
 
         return loss_summary
 
