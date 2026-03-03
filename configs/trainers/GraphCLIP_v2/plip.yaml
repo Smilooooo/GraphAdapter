@@ -10,10 +10,10 @@
 
 DATALOADER:
   TRAIN_X:
-    BATCH_SIZE: 256
+    BATCH_SIZE: 32           # Reduced to prevent OOM
   TEST:
-    BATCH_SIZE: 100
-  NUM_WORKERS: 8
+    BATCH_SIZE: 32
+  NUM_WORKERS: 0             # Single-process to avoid memory duplication
 
 INPUT:
   SIZE: (224, 224)
@@ -26,7 +26,7 @@ INPUT:
 OPTIM:
   NAME: "adamw"
   LR: 0.001
-  MAX_EPOCH: 25
+  MAX_EPOCH: 200
   LR_SCHEDULER: "cosine"
   WARMUP_EPOCH: 1
   WARMUP_TYPE: "constant"
@@ -44,5 +44,6 @@ MODEL:
     # FEATURE_DIM: 512
 
 TRAINER:
+  NAME: "GraphCLIP_v2"
   COOP:
     PREC: "fp32"             # transformers models prefer fp32

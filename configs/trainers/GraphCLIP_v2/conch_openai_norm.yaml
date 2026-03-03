@@ -11,10 +11,10 @@
 
 DATALOADER:
   TRAIN_X:
-    BATCH_SIZE: 128
+    BATCH_SIZE: 16           # Reduced - 448x448 images use more VRAM
   TEST:
-    BATCH_SIZE: 64
-  NUM_WORKERS: 8
+    BATCH_SIZE: 16
+  NUM_WORKERS: 0             # Single-process to avoid memory duplication
 
 INPUT:
   SIZE: (448, 448)
@@ -28,7 +28,7 @@ INPUT:
 OPTIM:
   NAME: "adamw"
   LR: 0.0005
-  MAX_EPOCH: 25
+  MAX_EPOCH: 100
   LR_SCHEDULER: "cosine"
   WARMUP_EPOCH: 2
   WARMUP_TYPE: "constant"

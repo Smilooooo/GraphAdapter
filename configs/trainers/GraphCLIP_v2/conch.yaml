@@ -15,18 +15,15 @@
 
 DATALOADER:
   TRAIN_X:
-    BATCH_SIZE: 128          # Smaller batch due to larger model / higher resolution
+    BATCH_SIZE: 8           # Reduced - 448x448 images use more VRAM
   TEST:
-    BATCH_SIZE: 64
-  NUM_WORKERS: 8
+    BATCH_SIZE: 8
+  NUM_WORKERS: 0             # Single-process to avoid memory duplication
 
 INPUT:
   SIZE: (448, 448)           # CONCH requires 448x448 (paper: "image size to 448×448 pixels")
   INTERPOLATION: "bicubic"
-  # CONCH uses ImageNet normalization (NOT OpenAI CLIP)
-  # Source: https://github.com/mahmoodlab/CONCH/blob/main/conch/open_clip_custom/constants.py
-  #   IMAGENET_DATASET_MEAN = (0.485, 0.456, 0.406)
-  #   IMAGENET_DATASET_STD = (0.229, 0.224, 0.225)
+  # Not sure on what CONCH really uses for normalization, but probably either ImageNet or OpenAI CLIP stats
   PIXEL_MEAN: [0.485, 0.456, 0.406]
   PIXEL_STD: [0.229, 0.224, 0.225]
   # Paper: "larger images were first resized along the shorter edge and center-cropped"
@@ -36,12 +33,12 @@ INPUT:
 
 OPTIM:
   NAME: "adamw"
-  LR: 0.0005                 # Lower LR for larger model
-  MAX_EPOCH: 25
+  LR: 0.001                # Lower LR for larger model
+  MAX_EPOCH: 100
   LR_SCHEDULER: "cosine"
   WARMUP_EPOCH: 2
   WARMUP_TYPE: "constant"
-  WARMUP_CONS_LR: 1e-6
+  WARMUP_CONS_LR: 1e-5
 
 TRAIN:
   PRINT_FREQ: 5

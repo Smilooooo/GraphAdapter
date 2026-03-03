@@ -34,18 +34,24 @@ MODEL_CONFIGS = {
     "ViT-B/32": {"framework": "openai_clip", "feature_dim": 512},
     "ViT-B/16": {"framework": "openai_clip", "feature_dim": 512},
     
-    # BiomedCLIP (open_clip)
+    # BiomedCLIP (open_clip with CustomTextCLIP)
+    # Uses create_model_from_pretrained, context_length=256
+    # Docs: https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
     "biomedclip": {
         "framework": "open_clip",
         "hub_name": "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224",
         "feature_dim": 512,
+        "context_length": 256,
     },
     
-    # PLIP (transformers)
+    # PLIP - Pathology Language and Image Pre-Training (HuggingFace transformers)
+    # Uses CLIPModel and CLIPProcessor from transformers
+    # Docs: https://huggingface.co/vinid/plip
     "plip": {
         "framework": "transformers",
         "hub_name": "vinid/plip",
         "feature_dim": 512,
+        "context_length": 77,
     },
     
     # QuiltNet (open_clip)
@@ -53,13 +59,19 @@ MODEL_CONFIGS = {
         "framework": "open_clip",
         "hub_name": "hf-hub:wisdomik/QuiltNet-B-32",
         "feature_dim": 512,
+        "context_length": 77,
     },
     
-    # CONCH (custom loader)
+    # CONCH - Contrastive learning from Captions for Histopathology
+    # Uses conch.open_clip_custom.create_model_from_pretrained
+    # REQUIRES HuggingFace authentication (gated model)
+    # Docs: https://github.com/mahmoodlab/CONCH
     "conch": {
         "framework": "conch",
-        "hub_name": "MahmoodLab/CONCH",
+        "model_name": "conch_ViT-B-16",  # Model architecture name
+        "hub_name": "hf_hub:MahmoodLab/conch",  # HuggingFace path
         "feature_dim": 512,
+        "context_length": 128,  # CONCH uses 127 + 1 padding = 128 total
     },
 }
 
@@ -116,13 +128,18 @@ class CLIPModelWrapper(nn.Module):
     def _setup_open_clip(self, model):
         """Setup for open_clip models (BiomedCLIP, QuiltNet)."""
         self.visual = model.visual
-        self.token_embedding = model.token_embedding
-        self.transformer = model.transformer
-        self.positional_embedding = model.positional_embedding
-        self.ln_final = model.ln_final
-        self.text_projection = model.text_projection
         self.logit_scale = model.logit_scale
-        # open_clip models are typically float32
+        
+        # Handle different open_clip architectures
+        # Standard CLIP has these attributes, but CustomTextCLIP (BiomedCLIP) doesn't
+        # BiomedCLIP uses a HuggingFace text encoder (PubMedBERT) internally
+        self.token_embedding = getattr(model, 'token_embedding', None)
+        self.transformer = getattr(model, 'transformer', None)
+        self.positional_embedding = getattr(model, 'positional_embedding', None)
+        self.ln_final = getattr(model, 'ln_final', None)
+        self.text_projection = getattr(model, 'text_projection', None)
+        
+        # Get dtype from model parameters
         self.dtype = next(model.parameters()).dtype
         
     def _setup_transformers(self, model):
@@ -140,8 +157,27 @@ class CLIPModelWrapper(nn.Module):
         
     def _setup_conch(self, model):
         """Setup for CONCH model."""
-        # CONCH follows open_clip interface
+        # CONCH follows open_clip interface but visual encoder returns tuple
         self._setup_open_clip(model)
+        
+        # Wrap visual encoder to handle tuple output
+        # CONCH's CoCa architecture returns (pooled_features, sequence_features)
+        # We only need the pooled features (first element)
+        original_visual = self.visual
+        
+        class CONCHVisualWrapper(nn.Module):
+            def __init__(self, visual_encoder):
+                super().__init__()
+                self.visual = visual_encoder
+            
+            def forward(self, x):
+                result = self.visual(x)
+                # CONCH returns tuple (pooled_features, sequence_features)
+                if isinstance(result, tuple):
+                    return result[0]  # Return only pooled features
+                return result
+        
+        self.visual = CONCHVisualWrapper(original_visual)
     
     @property
     def feature_dim(self) -> int:
@@ -250,8 +286,23 @@ def _load_open_clip(hub_name: str, device: str = "cpu") -> Tuple[Any, Callable, 
             "Install with: pip install open_clip_torch"
         )
     
-    model, _, preprocess = open_clip.create_model_and_transforms(hub_name)
-    tokenizer = open_clip.get_tokenizer(hub_name)
+    # BiomedCLIP and similar models use create_model_from_pretrained
+    # which returns (model, preprocess) - no transforms in the middle
+    if hub_name.startswith("hf-hub:"):
+        try:
+            # Try create_model_from_pretrained first (for BiomedCLIP, etc.)
+            model, preprocess = open_clip.create_model_from_pretrained(hub_name)
+            tokenizer = open_clip.get_tokenizer(hub_name)
+            print(f"  Loaded using create_model_from_pretrained")
+        except Exception as e:
+            # Fallback to create_model_and_transforms
+            print(f"  Falling back to create_model_and_transforms: {e}")
+            model, _, preprocess = open_clip.create_model_and_transforms(hub_name)
+            tokenizer = open_clip.get_tokenizer(hub_name)
+    else:
+        model, _, preprocess = open_clip.create_model_and_transforms(hub_name)
+        tokenizer = open_clip.get_tokenizer(hub_name)
+    
     model = model.to(device)
     
     return model, preprocess, tokenizer
@@ -267,8 +318,27 @@ def _load_transformers(hub_name: str, device: str = "cpu") -> Tuple[Any, Callabl
             "Install with: pip install transformers"
         )
     
-    model = CLIPModel.from_pretrained(hub_name)
-    processor = CLIPProcessor.from_pretrained(hub_name)
+    # Workaround for transformers bug with Dassl's logger (no isatty method)
+    import sys
+    original_stdout = sys.stdout
+    
+    # Create a wrapper that adds isatty method
+    class StdoutWrapper:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+        def __getattr__(self, name):
+            if name == 'isatty':
+                return lambda: False
+            return getattr(self._wrapped, name)
+    
+    sys.stdout = StdoutWrapper(sys.stdout)
+    
+    try:
+        model = CLIPModel.from_pretrained(hub_name, use_safetensors=True)
+        processor = CLIPProcessor.from_pretrained(hub_name)
+    finally:
+        sys.stdout = original_stdout
+    
     model = model.to(device)
     
     # Create preprocess function from processor
@@ -278,32 +348,68 @@ def _load_transformers(hub_name: str, device: str = "cpu") -> Tuple[Any, Callabl
     return model, preprocess, processor.tokenizer
 
 
-def _load_conch(hub_name: str, device: str = "cpu") -> Tuple[Any, Callable, Callable]:
-    """Load CONCH model."""
+def _load_conch(model_name: str, hub_name: str, device: str = "cpu") -> Tuple[Any, Callable, Callable]:
+    """
+    Load CONCH model.
+    
+    CONCH requires HuggingFace authentication since it's a gated model.
+    Set HF_TOKEN environment variable or run `huggingface-cli login`.
+    
+    Args:
+        model_name: Model architecture name (e.g., "conch_ViT-B-16")
+        hub_name: HuggingFace hub path (e.g., "hf_hub:MahmoodLab/conch")
+        device: Device to load model on
+    """
+    import os
+    hf_token = os.environ.get("HF_TOKEN", None)
+    
     try:
-        from conch.open_clip_custom import create_model_from_pretrained
-    except ImportError:
-        # Fallback to open_clip if conch package not available
-        try:
-            import open_clip
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                f"hf-hub:{hub_name}"
-            )
-            tokenizer = open_clip.get_tokenizer(f"hf-hub:{hub_name}")
-            return model.to(device), preprocess, tokenizer
-        except:
-            raise ImportError(
-                "CONCH model requires either the conch package or open_clip. "
-                "See: https://github.com/mahmoodlab/CONCH"
-            )
-    
-    model, preprocess = create_model_from_pretrained(f"hf_hub:{hub_name}")
-    model = model.to(device)
-    
-    import open_clip
-    tokenizer = open_clip.get_tokenizer(f"hf-hub:{hub_name}")
-    
-    return model, preprocess, tokenizer
+        from conch.open_clip_custom import create_model_from_pretrained, get_tokenizer, tokenize
+        print(f"  Loading CONCH using conch package")
+        print(f"  Model: {model_name}, Hub: {hub_name}")
+        
+        # CONCH API: create_model_from_pretrained('conch_ViT-B-16', "hf_hub:MahmoodLab/conch", hf_auth_token=...)
+        if hf_token:
+            model, preprocess = create_model_from_pretrained(model_name, hub_name, hf_auth_token=hf_token)
+        else:
+            model, preprocess = create_model_from_pretrained(model_name, hub_name)
+        
+        model = model.to(device)
+        
+        # CONCH requires both tokenizer and tokenize function
+        # Note: The tokenize function in CONCH uses batch_encode_plus which is deprecated
+        # in newer transformers. We call the tokenizer directly instead.
+        import torch.nn.functional as F
+        tokenizer = get_tokenizer()
+        print(f"  Using CONCH-specific tokenizer (direct call, bypassing batch_encode_plus)")
+        
+        # Create a wrapper that matches the expected interface
+        # Replicates CONCH's tokenize logic: https://github.com/mahmoodlab/CONCH/blob/main/conch/open_clip_custom/custom_tokenizer.py
+        def conch_tokenize(texts, context_length=None):
+            # Call tokenizer directly (works with newer transformers)
+            # CONCH model context length is 128, but last token is reserved for <cls>
+            # so we use 127 and insert <pad> at the end as a temporary placeholder
+            result = tokenizer(texts, 
+                             max_length=127,
+                             add_special_tokens=True, 
+                             return_token_type_ids=False,
+                             truncation=True,
+                             padding='max_length',
+                             return_tensors='pt')
+            # Pad with one more token at the end (to make 128 total)
+            tokens = F.pad(result['input_ids'], (0, 1), value=tokenizer.pad_token_id)
+            return tokens
+        
+        return model, preprocess, conch_tokenize
+        
+    except ImportError as e:
+        print(f"  CONCH package not found: {e}")
+        print(f"  Install with: pip install conch-ai")
+        print(f"  Or: pip install git+https://github.com/mahmoodlab/CONCH.git")
+        raise ImportError(
+            "CONCH model requires the conch package. "
+            "Install with: pip install git+https://github.com/mahmoodlab/CONCH.git"
+        )
 
 
 def load_clip_model(cfg, device: str = "cpu") -> CLIPModelWrapper:
@@ -362,7 +468,9 @@ def load_clip_model(cfg, device: str = "cpu") -> CLIPModelWrapper:
     elif framework == "transformers":
         model, preprocess, tokenizer = _load_transformers(hub_name, device)
     elif framework == "conch":
-        model, preprocess, tokenizer = _load_conch(hub_name, device)
+        # CONCH requires model_name (architecture) and hub_name (HF path)
+        model_name = config.get("model_name", "conch_ViT-B-16")
+        model, preprocess, tokenizer = _load_conch(model_name, hub_name, device)
     else:
         raise ValueError(f"Unknown framework: {framework}")
     

@@ -160,8 +160,8 @@ class GraphLearner(nn.Module):
         print(">> DCT scale factor: ", self.alpha)
         self.register_buffer("base_text_features", base_text_features)
         self.register_buffer("base_img_features", base_img_features)
-        self.alpha_it = 0.7
-        self.beta_it = cfg.TRAINER.GRAPHADAPTER.BETA
+        self.alpha_it = 0.6
+        self.beta_it = 0.7
         self.node_num = 1
         self.hidden_dim = feature_dim  # Use model's feature dimension
         
@@ -181,11 +181,16 @@ class GraphLearner(nn.Module):
 
     def forward(self, img_feature):
         with torch.no_grad():
-            node_cluster_t = self.base_text_features.view(
-                1, self.base_text_features.size()[0]//4, 4, self.base_text_features.size()[1]
+            # Handle cases where num_classes is not divisible by 4
+            num_classes = self.base_text_features.size()[0]
+            num_clusters = num_classes // 4
+            # Slice to the largest multiple of 4 (discard remainder classes for clustering)
+            num_to_use = num_clusters * 4
+            node_cluster_t = self.base_text_features[:num_to_use].view(
+                1, num_clusters, 4, self.base_text_features.size()[1]
             )
-            node_cluster_i = self.base_img_features.view(
-                1, self.base_img_features.size()[0]//4, 4, self.base_img_features.size()[1]
+            node_cluster_i = self.base_img_features[:num_to_use].view(
+                1, num_clusters, 4, self.base_img_features.size()[1]
             )
            
         graph_o_t_all = []
@@ -240,11 +245,17 @@ def _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loa
         
         img_feature_list = torch.cat(img_feature, dim=0)
         label_list = torch.cat(labels, dim=0)
-        sorted_labels, indices = torch.sort(label_list)
-        label_len = len(sorted_labels) // (sorted_labels[-1] + 1)
-        img_feature_list_all = torch.index_select(img_feature_list, 0, indices)
-        b, c = img_feature_list_all.size()
-        img_feature_list_all = img_feature_list_all.view(b // label_len, label_len, -1).mean(dim=1)
+        
+        # Handle uneven class distributions by computing mean per class
+        num_classes = label_list.max().item() + 1
+        feature_dim = img_feature_list.size(1)
+        img_feature_list_all = torch.zeros(num_classes, feature_dim, device=img_feature_list.device, dtype=img_feature_list.dtype)
+        
+        for cls_idx in range(num_classes):
+            mask = (label_list == cls_idx)
+            if mask.sum() > 0:
+                img_feature_list_all[cls_idx] = img_feature_list[mask].mean(dim=0)
+        
         img_encoder = img_encoder.to(device)
 
     return img_feature_list_all.to(device)
@@ -275,28 +286,26 @@ def _get_base_text_features(cfg, classnames, clip_model, text_encoder, framework
         for text in classnames:
             prompts = [template.format(text) for template in TEMPLATES]
             
+            # Check if text_encoder supports direct encoding (BiomedCLIP, PLIP, etc.)
+            if hasattr(text_encoder, 'encode_text_direct'):
+                features = text_encoder.encode_text_direct(prompts, device)
+                text_embeddings.append(features.mean(0, keepdim=True))
+                continue
+            
+            # Standard CLIP path: tokenize → embed → transform
             # Tokenize based on framework
             if framework == "transformers":
-                # For transformers, encode directly
-                if hasattr(text_encoder, 'encode_text_direct'):
-                    features = text_encoder.encode_text_direct(prompts, device)
-                    text_embeddings.append(features.mean(0, keepdim=True))
-                    continue
-                else:
-                    from transformers import AutoTokenizer
-                    # Fallback
-                    tokens = clip.tokenize(prompts).to(device)
+                from transformers import AutoTokenizer
+                tokens = clip.tokenize(prompts).to(device)
             elif framework in ("open_clip", "conch"):
                 import open_clip
                 tokens = open_clip.tokenize(prompts).to(device)
             else:
                 tokens = clip.tokenize(prompts).to(device)
             
+            # Get token embeddings and pass through text encoder
             embeddings = clip_model.token_embedding(tokens).type(dtype)
-            if dtype == torch.float16:
-                text_embeddings.append(text_encoder(embeddings.cuda(), tokens.cuda()))
-            else:
-                text_embeddings.append(text_encoder(embeddings.cuda(), tokens.cuda()))
+            text_embeddings.append(text_encoder(embeddings.cuda(), tokens.cuda()))
     
     text_embeddings = torch.stack(text_embeddings).mean(1)
     text_encoder = text_encoder.to(device)
@@ -308,20 +317,22 @@ def _get_base_text_features(cfg, classnames, clip_model, text_encoder, framework
 # =============================================================================
 
 class CustomCLIP(nn.Module):
-    def __init__(self, cfg, classnames, clip_model, train_loader_x, framework, feature_dim):
+    def __init__(self, cfg, classnames, clip_model, train_loader_x, framework, feature_dim, context_length=77):
         super().__init__()
         self.image_encoder = clip_model.visual
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
         self.framework = framework
         self.feature_dim = feature_dim
+        self.context_length = context_length
         
         # Create text encoder using unified interface
         text_encoder = create_text_encoder(
             clip_model._model if hasattr(clip_model, '_model') else clip_model,
             framework,
             feature_dim,
-            tokenizer=clip_model._tokenizer if hasattr(clip_model, '_tokenizer') else None
+            tokenizer=clip_model._tokenizer if hasattr(clip_model, '_tokenizer') else None,
+            context_length=context_length
         )
         img_encoder = self.image_encoder
         
@@ -379,17 +390,20 @@ class GraphCLIP_v2(TrainerX):
         classnames = self.dm.dataset.classnames
         backbone_name = cfg.MODEL.BACKBONE.NAME
 
-        # Determine framework
+        # Determine framework and model config
         if backbone_name in MODEL_CONFIGS:
             framework = MODEL_CONFIGS[backbone_name]["framework"]
             feature_dim = MODEL_CONFIGS[backbone_name]["feature_dim"]
+            context_length = MODEL_CONFIGS[backbone_name].get("context_length", 77)
         else:
             framework = getattr(cfg.MODEL.BACKBONE, "FRAMEWORK", "openai_clip")
             feature_dim = getattr(cfg.MODEL.BACKBONE, "FEATURE_DIM", 512)
+            context_length = getattr(cfg.MODEL.BACKBONE, "CONTEXT_LENGTH", 77)
 
         print(f"Loading model (backbone: {backbone_name})")
         print(f"  Framework: {framework}")
         print(f"  Feature dim: {feature_dim}")
+        print(f"  Context length: {context_length}")
         
         # Load model using registry
         if framework == "openai_clip":
@@ -414,7 +428,7 @@ class GraphCLIP_v2(TrainerX):
 
         print("Building custom CLIP")
         self.model = CustomCLIP(
-            cfg, classnames, clip_model, self.train_loader_x, framework, feature_dim
+            cfg, classnames, clip_model, self.train_loader_x, framework, feature_dim, context_length
         ).cuda()
 
         print("Turning off gradients in both the image and the text encoder")

@@ -68,7 +68,7 @@ class OpenAICLIPTextEncoder(BaseTextEncoder):
 
 
 class OpenCLIPTextEncoder(BaseTextEncoder):
-    """Text encoder for open_clip models (BiomedCLIP, QuiltNet, etc.)."""
+    """Text encoder for standard open_clip models (with exposed transformer)."""
     
     def __init__(self, clip_model, feature_dim: int = 512):
         super().__init__(feature_dim)
@@ -97,6 +97,56 @@ class OpenCLIPTextEncoder(BaseTextEncoder):
         x = x[torch.arange(x.shape[0]), tokenized_prompts.argmax(dim=-1)] @ self.text_projection
 
         return x
+
+
+class DirectOpenCLIPTextEncoder(BaseTextEncoder):
+    """
+    Text encoder for open_clip models that don't expose internal components.
+    
+    Used for models like BiomedCLIP (CustomTextCLIP) that use HuggingFace
+    text encoders internally and don't expose token_embedding, transformer, etc.
+    
+    This encoder uses the model's encode_text() method directly.
+    """
+    
+    def __init__(self, clip_model, feature_dim: int = 512, tokenizer=None, context_length: int = 256):
+        super().__init__(feature_dim)
+        
+        # Store the underlying model for direct encoding
+        self._model = clip_model._model if hasattr(clip_model, '_model') else clip_model
+        self._tokenizer = tokenizer if tokenizer is not None else clip_model._tokenizer if hasattr(clip_model, '_tokenizer') else None
+        self._context_length = context_length  # BiomedCLIP uses 256
+        self.dtype = next(self._model.parameters()).dtype
+    
+    def forward(self, prompts: torch.Tensor, tokenized_prompts: torch.Tensor) -> torch.Tensor:
+        """
+        For DirectOpenCLIPTextEncoder, we ignore the prompts parameter and use
+        tokenized_prompts directly with encode_text().
+        
+        Note: This means learnable prompt embeddings (CoOp-style) won't work with
+        this encoder. Use for inference/feature extraction only.
+        """
+        # Use the model's built-in encode_text
+        with torch.no_grad():
+            text_features = self._model.encode_text(tokenized_prompts)
+        return text_features
+    
+    def encode_text_direct(self, texts: List[str], device: torch.device) -> torch.Tensor:
+        """
+        Directly encode text strings (simpler path for text feature extraction).
+        Uses the proper tokenizer with correct context_length.
+        """
+        if self._tokenizer is not None:
+            # Use the model's specific tokenizer (e.g., BiomedCLIP with context_length=256)
+            tokens = self._tokenizer(texts, context_length=self._context_length).to(device)
+        else:
+            # Fallback to generic open_clip tokenizer
+            import open_clip
+            tokens = open_clip.tokenize(texts, context_length=self._context_length).to(device)
+        
+        with torch.no_grad():
+            text_features = self._model.encode_text(tokens)
+        return text_features
 
 
 class TransformersTextEncoder(BaseTextEncoder):
@@ -157,13 +207,20 @@ class TransformersTextEncoder(BaseTextEncoder):
     def encode_text_direct(self, texts: List[str], device: torch.device) -> torch.Tensor:
         """
         Directly encode text strings (simpler path for text feature extraction).
+        For transformers CLIP, get_text_features() returns BaseModelOutputWithPooling.
+        We need to extract the pooler_output tensor.
         """
         inputs = self.tokenizer(texts, padding=True, return_tensors="pt").to(device)
-        text_features = self._clip_model.get_text_features(**inputs)
+        
+        with torch.no_grad():
+            # get_text_features returns BaseModelOutputWithPooling, extract pooler_output
+            outputs = self._clip_model.get_text_features(**inputs)
+            text_features = outputs.pooler_output if hasattr(outputs, 'pooler_output') else outputs
+        
         return text_features
 
 
-def create_text_encoder(clip_model, framework: str, feature_dim: int, tokenizer=None) -> BaseTextEncoder:
+def create_text_encoder(clip_model, framework: str, feature_dim: int, tokenizer=None, context_length: int = 77) -> BaseTextEncoder:
     """
     Factory function to create the appropriate text encoder.
     
@@ -171,7 +228,8 @@ def create_text_encoder(clip_model, framework: str, feature_dim: int, tokenizer=
         clip_model: The loaded CLIP model
         framework: One of "openai_clip", "open_clip", "transformers", "conch"
         feature_dim: Output feature dimension
-        tokenizer: Tokenizer (required for transformers framework)
+        tokenizer: Tokenizer (required for transformers framework, optional for open_clip)
+        context_length: Max context length (default 77, BiomedCLIP uses 256)
         
     Returns:
         BaseTextEncoder: Appropriate text encoder instance
@@ -179,7 +237,18 @@ def create_text_encoder(clip_model, framework: str, feature_dim: int, tokenizer=
     if framework == "openai_clip":
         return OpenAICLIPTextEncoder(clip_model)
     elif framework in ("open_clip", "conch"):
-        return OpenCLIPTextEncoder(clip_model, feature_dim)
+        # Check if model exposes transformer (standard CLIP architecture)
+        # or if it's a CustomTextCLIP (like BiomedCLIP) that uses HuggingFace internally
+        underlying_model = clip_model._model if hasattr(clip_model, '_model') else clip_model
+        
+        if hasattr(underlying_model, 'transformer') and underlying_model.transformer is not None:
+            # Standard open_clip model with exposed components
+            return OpenCLIPTextEncoder(underlying_model, feature_dim)
+        else:
+            # CustomTextCLIP (BiomedCLIP, etc.) - use direct encoding
+            print(f"  Using DirectOpenCLIPTextEncoder (CustomTextCLIP detected, context_length={context_length})")
+            # Pass tokenizer for proper encoding (e.g., BiomedCLIP needs context_length=256)
+            return DirectOpenCLIPTextEncoder(clip_model, feature_dim, tokenizer=tokenizer, context_length=context_length)
     elif framework == "transformers":
         if tokenizer is None:
             raise ValueError("tokenizer is required for transformers framework")
@@ -227,7 +296,13 @@ class UnifiedTextEncoder(nn.Module):
         if self.framework == "transformers":
             return self._clip_model.text_model.embeddings.token_embedding(tokens)
         else:
-            return self._clip_model.token_embedding(tokens)
+            # Handle models without token_embedding (e.g., BiomedCLIP with CustomTextCLIP)
+            if hasattr(self._clip_model, 'token_embedding') and self._clip_model.token_embedding is not None:
+                return self._clip_model.token_embedding(tokens)
+            else:
+                # For CustomTextCLIP models, token_embedding is not exposed
+                # Return None to signal that direct encode_text should be used
+                return None
     
     def encode(self, texts: List[str], device: torch.device) -> torch.Tensor:
         """
@@ -246,8 +321,14 @@ class UnifiedTextEncoder(nn.Module):
         
         # For CLIP-style models
         tokens = self.tokenize(texts).to(device)
-        embeddings = self.get_embeddings(tokens).type(self.dtype)
+        embeddings = self.get_embeddings(tokens)
         
+        # If embeddings is None, use direct encode_text (for CustomTextCLIP models like BiomedCLIP)
+        if embeddings is None:
+            import open_clip
+            return self._clip_model._model.encode_text(tokens)
+        
+        embeddings = embeddings.type(self.dtype)
         return self.encoder(embeddings, tokens)
     
     def forward(self, prompts: torch.Tensor, tokenized_prompts: torch.Tensor) -> torch.Tensor:
