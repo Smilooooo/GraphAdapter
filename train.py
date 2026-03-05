@@ -28,9 +28,9 @@ import datasets.iciar2018
 
 # import trainers.coop
 # import trainers.cocoop
-import trainers.zsclip
-# import trainers.baseclip_graph
-import trainers.baseclip_graph_v1
+#import trainers.zsclip # unused import, only necessary for ImageNet
+#import trainers.baseclip_graph
+#import trainers.baseclip_graph_v1
 import trainers.baseclip_graph_v2  # Multi-backbone support (PLIP, BiomedCLIP, etc.)
 
 

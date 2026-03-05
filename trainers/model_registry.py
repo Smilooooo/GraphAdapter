@@ -84,28 +84,29 @@ class CLIPModelWrapper(nn.Module):
     """
     Unified wrapper that provides consistent interface across different CLIP implementations.
     
+    Handles model loading, image encoding, text encoding, and tokenization for:
+    - open_clip (BiomedCLIP, QuiltNet)
+    - HuggingFace transformers (PLIP)
+    - CONCH
+    
+    Note: OpenAI CLIP models are loaded separately (raw model) and already have
+    a compatible interface (encode_text, encode_image, etc.).
+    
     Attributes:
         visual: Image encoder
-        token_embedding: Token embedding layer (for text)
-        transformer: Text transformer
-        positional_embedding: Positional embeddings for text
-        ln_final: Final layer norm for text
-        text_projection: Text projection matrix
         logit_scale: Learnable temperature parameter
         dtype: Model dtype (float16 or float32)
     """
     
-    def __init__(self, model, tokenizer, framework: str, feature_dim: int):
+    def __init__(self, model, tokenizer, framework: str, feature_dim: int, context_length: int = 77):
         super().__init__()
         self.framework = framework
         self._feature_dim = feature_dim
         self._tokenizer = tokenizer
         self._model = model
+        self._context_length = context_length
         
-        # Set up unified interface based on framework
-        if framework == "openai_clip":
-            self._setup_openai_clip(model)
-        elif framework == "open_clip":
+        if framework == "open_clip":
             self._setup_open_clip(model)
         elif framework == "transformers":
             self._setup_transformers(model)
@@ -113,17 +114,6 @@ class CLIPModelWrapper(nn.Module):
             self._setup_conch(model)
         else:
             raise ValueError(f"Unknown framework: {framework}")
-    
-    def _setup_openai_clip(self, model):
-        """Setup for original OpenAI CLIP."""
-        self.visual = model.visual
-        self.token_embedding = model.token_embedding
-        self.transformer = model.transformer
-        self.positional_embedding = model.positional_embedding
-        self.ln_final = model.ln_final
-        self.text_projection = model.text_projection
-        self.logit_scale = model.logit_scale
-        self.dtype = model.dtype
         
     def _setup_open_clip(self, model):
         """Setup for open_clip models (BiomedCLIP, QuiltNet)."""
@@ -146,8 +136,6 @@ class CLIPModelWrapper(nn.Module):
         """Setup for HuggingFace transformers models (PLIP)."""
         # transformers CLIPModel has different structure
         self.visual = TransformersVisualWrapper(model)
-        self.token_embedding = TransformersTokenEmbeddingWrapper(model)
-        self.transformer = TransformersTextTransformerWrapper(model)
         # These need special handling for transformers
         self.positional_embedding = model.text_model.embeddings.position_embedding.weight
         self.ln_final = model.text_model.final_layer_norm
@@ -172,6 +160,7 @@ class CLIPModelWrapper(nn.Module):
             
             def forward(self, x):
                 result = self.visual(x)
+
                 # CONCH returns tuple (pooled_features, sequence_features)
                 if isinstance(result, tuple):
                     return result[0]  # Return only pooled features
@@ -183,34 +172,40 @@ class CLIPModelWrapper(nn.Module):
     def feature_dim(self) -> int:
         return self._feature_dim
     
+    @property
+    def device(self):
+        """Get the device of the model."""
+        return next(self._model.parameters()).device
+    
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
         """Encode images to feature vectors."""
         return self.visual(image.type(self.dtype))
     
     def encode_text(self, text: torch.Tensor) -> torch.Tensor:
         """Encode tokenized text to feature vectors."""
-        if self.framework == "transformers":
-            return self._model.get_text_features(text)
-        else:
-            # OpenAI CLIP / open_clip style
-            x = self.token_embedding(text).type(self.dtype)
-            x = x + self.positional_embedding.type(self.dtype)
-            x = x.permute(1, 0, 2)  # NLD -> LND
-            x = self.transformer(x)
-            x = x.permute(1, 0, 2)  # LND -> NLD
-            x = self.ln_final(x).type(self.dtype)
-            x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
-            return x
+        if self.framework in ["open_clip", "conch"]:
+            return self._model.encode_text(text)
+        elif self.framework == "transformers":
+            # PLIP-specific: get_text_features with input_ids returns tensor directly
+            features = self._model.get_text_features(input_ids=text)
+            if isinstance(features, torch.Tensor):
+                return features
+            elif hasattr(features, 'pooler_output'):
+                return features.pooler_output
+            else:
+                return features.last_hidden_state[:, 0, :]
     
-    def tokenize(self, texts, context_length: int = 77):
+    def tokenize(self, texts, context_length: int = None):
         """Tokenize text using the appropriate tokenizer."""
+        if context_length is None:
+            context_length = self._context_length
+        
         if self.framework == "transformers":
             return self._tokenizer(texts, padding=True, return_tensors="pt")["input_ids"]
-        elif self.framework == "open_clip":
-            import open_clip
-            return open_clip.tokenize(texts, context_length=context_length)
+        elif self.framework in ["open_clip", "conch"]:
+            return self._tokenizer(texts, context_length=context_length)
         else:
-            return clip.tokenize(texts, context_length=context_length)
+            raise ValueError(f"Unknown framework for tokenization: {self.framework}")
 
 
 class TransformersVisualWrapper(nn.Module):
@@ -227,54 +222,9 @@ class TransformersVisualWrapper(nn.Module):
         return self.visual_projection(pooled)
 
 
-class TransformersTokenEmbeddingWrapper(nn.Module):
-    """Wrapper for transformers token embedding."""
-    
-    def __init__(self, clip_model):
-        super().__init__()
-        self.embeddings = clip_model.text_model.embeddings
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.embeddings.token_embedding(x)
-
-
-class TransformersTextTransformerWrapper(nn.Module):
-    """Wrapper for transformers text encoder."""
-    
-    def __init__(self, clip_model):
-        super().__init__()
-        self.encoder = clip_model.text_model.encoder
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x is in LND format, encoder expects NLD
-        x = x.permute(1, 0, 2)
-        outputs = self.encoder(inputs_embeds=x)
-        x = outputs.last_hidden_state
-        return x.permute(1, 0, 2)  # Back to LND
-
-
 # =============================================================================
 # Model Loading Functions
 # =============================================================================
-
-def _load_openai_clip(backbone_name: str, device: str = "cpu") -> Tuple[Any, Callable, Callable]:
-    """Load original OpenAI CLIP model."""
-    url = clip._MODELS[backbone_name]
-    model_path = clip._download(url)
-    
-    try:
-        model = torch.jit.load(model_path, map_location=device).eval()
-        state_dict = None
-    except RuntimeError:
-        state_dict = torch.load(model_path, map_location=device)
-    
-    model = clip.build_model(state_dict or model.state_dict())
-    
-    # Get preprocessing
-    _, preprocess = clip.load(backbone_name, device=device, jit=False)
-    
-    return model, preprocess, clip.tokenize
-
 
 def _load_open_clip(hub_name: str, device: str = "cpu") -> Tuple[Any, Callable, Callable]:
     """Load open_clip model from HuggingFace Hub."""
@@ -461,9 +411,7 @@ def load_clip_model(cfg, device: str = "cpu") -> CLIPModelWrapper:
         print(f"  Hub name: {hub_name}")
     
     # Load based on framework
-    if framework == "openai_clip":
-        model, preprocess, tokenizer = _load_openai_clip(backbone_name, device)
-    elif framework == "open_clip":
+    if framework == "open_clip":
         model, preprocess, tokenizer = _load_open_clip(hub_name, device)
     elif framework == "transformers":
         model, preprocess, tokenizer = _load_transformers(hub_name, device)
@@ -475,7 +423,8 @@ def load_clip_model(cfg, device: str = "cpu") -> CLIPModelWrapper:
         raise ValueError(f"Unknown framework: {framework}")
     
     # Wrap in unified interface
-    wrapped = CLIPModelWrapper(model, tokenizer, framework, feature_dim)
+    context_length = config.get("context_length", 77)
+    wrapped = CLIPModelWrapper(model, tokenizer, framework, feature_dim, context_length)
     
     return wrapped
 

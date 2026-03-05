@@ -30,7 +30,6 @@ from dassl.metrics import compute_accuracy
 from clip import clip
 
 from .model_registry import load_clip_model, get_feature_dim, MODEL_CONFIGS
-from .text_encoders import create_text_encoder, UnifiedTextEncoder
 from .imagenet_templates import IMAGENET_TEMPLATES, IMAGENET_TEMPLATES_SELECT
 
 
@@ -233,6 +232,7 @@ def _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loa
     with torch.no_grad():
         img_feature = []
         labels = []
+        # TODO maybe set to 1 since the authors dont mention this parameter in their paper, but on their GitHub they set it to 10, so we will keep it for now
         for epch in range(10):
             for batch_idx, batch in enumerate(train_loader_x):
                 image = batch["img"]
@@ -261,13 +261,18 @@ def _get_base_image_features(cfg, classnames, clip_model, img_encoder, train_loa
     return img_feature_list_all.to(device)
 
 
-def _get_base_text_features(cfg, classnames, clip_model, text_encoder, framework):
-    """Extract base text features using prompts."""
-    device = next(text_encoder.parameters()).device
+def _get_base_text_features(cfg, classnames, clip_model, framework):
+    """Extract base text features using prompts.
+    
+    Uses clip_model.encode_text() directly for all frameworks.
+    For OpenAI CLIP (raw model), encode_text is built-in.
+    For wrapped models (CLIPModelWrapper), encode_text delegates to the underlying model.
+    """
+    device = next(clip_model.parameters()).device
     dtype = clip_model.dtype
     
     if dtype == torch.float16:
-        text_encoder = text_encoder.cuda()
+        clip_model = clip_model.cuda()
     
     dataset = cfg.DATASET.NAME
 
@@ -286,29 +291,20 @@ def _get_base_text_features(cfg, classnames, clip_model, text_encoder, framework
         for text in classnames:
             prompts = [template.format(text) for template in TEMPLATES]
             
-            # Check if text_encoder supports direct encoding (BiomedCLIP, PLIP, etc.)
-            if hasattr(text_encoder, 'encode_text_direct'):
-                features = text_encoder.encode_text_direct(prompts, device)
-                text_embeddings.append(features.mean(0, keepdim=True))
-                continue
-            
-            # Standard CLIP path: tokenize → embed → transform
-            # Tokenize based on framework
-            if framework == "transformers":
-                from transformers import AutoTokenizer
-                tokens = clip.tokenize(prompts).to(device)
-            elif framework in ("open_clip", "conch"):
-                import open_clip
-                tokens = open_clip.tokenize(prompts).to(device)
+            # Tokenize based on model type
+            if hasattr(clip_model, 'tokenize'):
+                # CLIPModelWrapper (non-OpenAI models)
+                tokens = clip_model.tokenize(prompts).to(device)
             else:
+                # Raw OpenAI CLIP model
                 tokens = clip.tokenize(prompts).to(device)
             
-            # Get token embeddings and pass through text encoder
-            embeddings = clip_model.token_embedding(tokens).type(dtype)
-            text_embeddings.append(text_encoder(embeddings.cuda(), tokens.cuda()))
+            # Encode text using the model's built-in method
+            features = clip_model.encode_text(tokens)
+            text_embeddings.append(features.mean(0, keepdim=True))
     
-    text_embeddings = torch.stack(text_embeddings).mean(1)
-    text_encoder = text_encoder.to(device)
+    text_embeddings = torch.cat(text_embeddings, dim=0)
+    clip_model = clip_model.to(device)
     return text_embeddings.to(device)
 
 
@@ -326,19 +322,11 @@ class CustomCLIP(nn.Module):
         self.feature_dim = feature_dim
         self.context_length = context_length
         
-        # Create text encoder using unified interface
-        text_encoder = create_text_encoder(
-            clip_model._model if hasattr(clip_model, '_model') else clip_model,
-            framework,
-            feature_dim,
-            tokenizer=clip_model._tokenizer if hasattr(clip_model, '_tokenizer') else None,
-            context_length=context_length
-        )
         img_encoder = self.image_encoder
         
-        # Get base features
+        # Get base features (clip_model.encode_text handles all frameworks)
         base_text_features = _get_base_text_features(
-            cfg, classnames, clip_model, text_encoder, framework
+            cfg, classnames, clip_model, framework
         )
         base_img_features = _get_base_image_features(
             cfg, classnames, clip_model, img_encoder, train_loader_x, feature_dim

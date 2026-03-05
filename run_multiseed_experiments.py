@@ -28,6 +28,8 @@ BACKBONE_CONFIGS = {
     "plip": "configs/trainers/GraphCLIP_v2/plip.yaml",
     "conch": "configs/trainers/GraphCLIP_v2/conch.yaml",
     "rn50": "configs/trainers/GraphCLIP_v2/rn50.yaml",
+    "conch_openai_norm": "configs/trainers/GraphCLIP_v2/conch_openai_norm.yaml",
+    "conch_224": "configs/trainers/GraphCLIP_v2/conch_224.yaml"
 }
 
 

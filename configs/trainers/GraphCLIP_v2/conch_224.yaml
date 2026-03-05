@@ -1,0 +1,56 @@
+# =============================================================================
+# GraphCLIP v2 - CONCH Backbone
+# =============================================================================
+# CONCH: A Vision-Language Foundation Model for Computational Pathology
+# Pre-trained on 1.17M pathology image-caption pairs + PubMed
+# Paper: https://www.nature.com/articles/s41591-024-02856-4
+# HuggingFace: MahmoodLab/CONCH (GATED - requires authentication)
+#
+# IMPORTANT: CONCH requires HuggingFace authentication:
+#   1. Accept the license at: https://huggingface.co/MahmoodLab/CONCH
+#   2. Set environment variable: $env:HF_TOKEN = "your_token_here"
+#   3. Or run: huggingface-cli login
+#
+# Use: python train.py --trainer GraphCLIP_v2 --config-file configs/trainers/GraphCLIP_v2/conch.yaml ...
+
+DATALOADER:
+  TRAIN_X:
+    BATCH_SIZE: 8           # Reduced - 448x448 images use more VRAM
+  TEST:
+    BATCH_SIZE: 8
+  NUM_WORKERS: 0             # Single-process to avoid memory duplication
+
+INPUT:
+  SIZE: (224, 224)           # CONCH requires 448x448 (paper: "image size to 448×448 pixels")
+  INTERPOLATION: "bicubic"
+  # Not sure on what CONCH really uses for normalization, but probably either ImageNet or OpenAI CLIP stats
+  PIXEL_MEAN: [0.485, 0.456, 0.406]
+  PIXEL_STD: [0.229, 0.224, 0.225]
+  # Paper: "larger images were first resized along the shorter edge and center-cropped"
+  # Training: random_resized_crop is acceptable augmentation
+  # Inference: Dassl automatically uses resize → center_crop (matches paper requirement)
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+OPTIM:
+  NAME: "adamw"
+  LR: 0.001                # Lower LR for larger model
+  MAX_EPOCH: 100
+  LR_SCHEDULER: "cosine"
+  WARMUP_EPOCH: 2
+  WARMUP_TYPE: "constant"
+  WARMUP_CONS_LR: 1e-5
+
+TRAIN:
+  PRINT_FREQ: 5
+
+MODEL:
+  BACKBONE:
+    NAME: "conch"            # Key from MODEL_CONFIGS in model_registry.py
+    # These are looked up automatically from MODEL_CONFIGS:
+    # FRAMEWORK: "conch"
+    # HUB_NAME: "MahmoodLab/CONCH"
+    # FEATURE_DIM: 512
+
+TRAINER:
+  COOP:
+    PREC: "fp32"

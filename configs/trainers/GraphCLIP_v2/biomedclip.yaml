@@ -25,7 +25,7 @@ INPUT:
 OPTIM:
   NAME: "adamw"
   LR: 0.001
-  MAX_EPOCH: 200
+  MAX_EPOCH: 100
   LR_SCHEDULER: "cosine"
   WARMUP_EPOCH: 1
   WARMUP_TYPE: "constant"
@@ -43,6 +43,5 @@ MODEL:
     # FEATURE_DIM: 512
 
 TRAINER:
-  NAME: "GraphCLIP_v2"
   COOP:
     PREC: "fp32"             # BiomedCLIP works better in fp32
