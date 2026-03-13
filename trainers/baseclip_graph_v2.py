@@ -54,8 +54,12 @@ CUSTOM_TEMPLATES = {
     "ImageNetA": "a photo of a {}.",
     "ImageNetR": "a photo of a {}.",
     # Pathology datasets
-    "LungHist700": "a histopathological image of {}.",
-    "BRACS": "a histopathological image of {}.",
+    # "LungHist700": "a histopathological image of {}.",  # Our version
+    # "BRACS": "a histopathological image of {}.",          # Our version
+    "LungHist700": "a histological image of a {} cell in pulmonary pathology.",  # Tien's version
+    "LungHist": "a histological image of a {} cell in pulmonary pathology.",  # Tien's original dataset name
+    "LungHistDescriptive": "a histological image of a {} cell in pulmonary pathology.",  # Descriptive class names
+    "BRACS": "a histological image of a {} cell in breast carcinoma subtyping.",  # Tien's version
     "ICIAR2018": "a histopathological image of {}.",
 }
 
@@ -159,8 +163,10 @@ class GraphLearner(nn.Module):
         print(">> DCT scale factor: ", self.alpha)
         self.register_buffer("base_text_features", base_text_features)
         self.register_buffer("base_img_features", base_img_features)
-        self.alpha_it = 0.6
-        self.beta_it = 0.7
+        # self.alpha_it = 0.6  # My value (from paper)
+        # self.beta_it = 0.7   # My value (from paper)
+        self.alpha_it = 0.7  # Tien's value (from their code)
+        self.beta_it = 0.5   # Tien's value (from their code)
         self.node_num = 1
         self.hidden_dim = feature_dim  # Use model's feature dimension
         
@@ -179,22 +185,26 @@ class GraphLearner(nn.Module):
             self.graph_node[i].data.uniform_(-stdv, stdv)
 
     def forward(self, img_feature):
+        # Tien's original logic: num_batches=1, uses ALL classes as cluster nodes (no discarding)
+        # Graph: each class node attends to all other class nodes → (num_classes+1)-node graph
+        num_batches = 1  # 4 // 4 = 1 in original
+
+        # Our modified logic (4 iterations, 2-node graph, discards remainder classes):
+        # num_clusters = self.base_text_features.size()[0] // 4
+        # num_to_use = num_clusters * 4
+        # node_cluster_t = self.base_text_features[:num_to_use].view(1, num_clusters, 4, dim)
+        # node_cluster_i = self.base_img_features[:num_to_use].view(1, num_clusters, 4, dim)
+        # for index in range(4): ...
+
         with torch.no_grad():
-            # Handle cases where num_classes is not divisible by 4
-            num_classes = self.base_text_features.size()[0]
-            num_clusters = num_classes // 4
-            # Slice to the largest multiple of 4 (discard remainder classes for clustering)
-            num_to_use = num_clusters * 4
-            node_cluster_t = self.base_text_features[:num_to_use].view(
-                1, num_clusters, 4, self.base_text_features.size()[1]
-            )
-            node_cluster_i = self.base_img_features[:num_to_use].view(
-                1, num_clusters, 4, self.base_img_features.size()[1]
-            )
-           
+            node_cluster_t = self.base_text_features.view(
+                1, self.base_text_features.size()[0] // num_batches, num_batches, self.base_text_features.size()[1])
+            node_cluster_i = self.base_img_features.view(
+                1, self.base_img_features.size()[0] // num_batches, num_batches, self.base_img_features.size()[1])
+
         graph_o_t_all = []
-            
-        for index in range(4):
+
+        for index in range(num_batches):
             with torch.no_grad():
                 inputs_text = self.base_text_features.unsqueeze(dim=1)
                 inputs_img = img_feature.unsqueeze(dim=1)
@@ -206,14 +216,14 @@ class GraphLearner(nn.Module):
                 feat_it = feat_it.transpose(1, 2).detach()
                 edge_tt = cal_edge_emb(feat_tt).detach()
                 edge_it = cal_edge_emb(feat_it).detach()
-            
+
             graph_o_tt = self.GCN_tt(feat_tt, edge_tt)
             graph_o_it = self.GCN_it(feat_it, edge_it)
             graph_o_t = (graph_o_tt) * self.alpha_it + (1 - self.alpha_it) * graph_o_it
             graph_o_t_all.append(graph_o_t)
-        
+
         graph_o_t = torch.stack(graph_o_t_all, dim=0).mean(dim=0)
-    
+
         return self.beta_it * self.base_text_features + (1 - self.beta_it) * graph_o_t.squeeze(), img_feature
 
 

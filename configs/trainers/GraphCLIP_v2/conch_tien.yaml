@@ -1,0 +1,44 @@
+# =============================================================================
+# GraphCLIP v2 - CONCH Backbone (Tien's original settings)
+# =============================================================================
+# Matches the exact hyperparameters used by Tien/Han in their experiments:
+# - 224x224 images (NOT CONCH's native 448x448)
+# - adam optimizer, LR=0.0002 (NOT adamw/0.001)
+# - 200 epochs (NOT 100)
+# - batch size 47 train / 100 test
+# - OpenAI CLIP normalization stats
+# Use this config to reproduce their exact results for comparison.
+
+DATALOADER:
+  TRAIN_X:
+    BATCH_SIZE: 47
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 0
+
+INPUT:
+  SIZE: (224, 224)
+  INTERPOLATION: "bicubic"
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+OPTIM:
+  NAME: "adam"
+  LR: 0.0002
+  MAX_EPOCH: 200
+  LR_SCHEDULER: "cosine"
+  WARMUP_EPOCH: 1
+  WARMUP_TYPE: "constant"
+  WARMUP_CONS_LR: 1e-5
+
+TRAIN:
+  PRINT_FREQ: 5
+
+MODEL:
+  BACKBONE:
+    NAME: "conch"
+
+TRAINER:
+  COOP:
+    PREC: "fp32"

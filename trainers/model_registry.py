@@ -35,13 +35,14 @@ MODEL_CONFIGS = {
     "ViT-B/16": {"framework": "openai_clip", "feature_dim": 512},
     
     # BiomedCLIP (open_clip with CustomTextCLIP)
-    # Uses create_model_from_pretrained, context_length=256
+    # Uses create_model_from_pretrained, context_length=256 natively
+    # But Tien's code uses context_length=77 (matching standard CLIP default)
     # Docs: https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
     "biomedclip": {
         "framework": "open_clip",
         "hub_name": "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224",
         "feature_dim": 512,
-        "context_length": 256,
+        "context_length": 77,
     },
     
     # PLIP - Pathology Language and Image Pre-Training (HuggingFace transformers)
@@ -183,7 +184,14 @@ class CLIPModelWrapper(nn.Module):
     
     def encode_text(self, text: torch.Tensor) -> torch.Tensor:
         """Encode tokenized text to feature vectors."""
-        if self.framework in ["open_clip", "conch"]:
+        if self.framework == "conch":
+            # Tien's original code explicitly uses normalize=False for CONCH.
+            # CONCH's default is normalize=True (unlike open_clip which defaults to False).
+            # Raw (unnormalized) features must go into the graph; normalization happens
+            # in CustomCLIP.forward() after the graph transform.
+            return self._model.encode_text(text, normalize=False)
+        elif self.framework == "open_clip":
+            # open_clip default is already normalize=False, so this is consistent
             return self._model.encode_text(text)
         elif self.framework == "transformers":
             # PLIP-specific: get_text_features with input_ids returns tensor directly

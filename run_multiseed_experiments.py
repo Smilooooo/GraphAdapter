@@ -24,12 +24,17 @@ import numpy as np
 
 # Backbone to config file mapping
 BACKBONE_CONFIGS = {
+    # Our improved settings (adamw, LR=0.001, 100 epochs, 448x448 CONCH)
     "biomedclip": "configs/trainers/GraphCLIP_v2/biomedclip.yaml",
     "plip": "configs/trainers/GraphCLIP_v2/plip.yaml",
     "conch": "configs/trainers/GraphCLIP_v2/conch.yaml",
     "rn50": "configs/trainers/GraphCLIP_v2/rn50.yaml",
     "conch_openai_norm": "configs/trainers/GraphCLIP_v2/conch_openai_norm.yaml",
-    "conch_224": "configs/trainers/GraphCLIP_v2/conch_224.yaml"
+    "conch_224": "configs/trainers/GraphCLIP_v2/conch_224.yaml",
+    # Tien's original settings (adam, LR=0.0002, 200 epochs, 224x224, batch 47)
+    "biomedclip_tien": "configs/trainers/GraphCLIP_v2/biomedclip_tien.yaml",
+    "plip_tien": "configs/trainers/GraphCLIP_v2/plip_tien.yaml",
+    "conch_tien": "configs/trainers/GraphCLIP_v2/conch_tien.yaml",
 }
 
 

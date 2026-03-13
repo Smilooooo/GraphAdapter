@@ -9,15 +9,16 @@ from dassl.utils import listdir_nohidden, mkdir_if_missing
 
 from .oxford_pets import OxfordPets
 
-NEW_CNAMES = {
-    "0_N": "Normal breast tissue",
-    "1_PB": "Pathological benign lesion",
-    "2_UDH": "Usual ductal hyperplasia",
-    "3_FEA": "Flat epithelial atypia",
-    "4_ADH": "Atypical ductal hyperplasia",
-    "5_DCIS": "Ductal carcinoma in situ",
-    "6_IC": "Invasive carcinoma"
-}
+# NOTE: Commented out to match Tien's original setup (raw folder names used instead)
+# NEW_CNAMES = {
+#     "0_N": "Normal breast tissue",
+#     "1_PB": "Pathological benign lesion",
+#     "2_UDH": "Usual ductal hyperplasia",
+#     "3_FEA": "Flat epithelial atypia",
+#     "4_ADH": "Atypical ductal hyperplasia",
+#     "5_DCIS": "Ductal carcinoma in situ",
+#     "6_IC": "Invasive carcinoma"
+# }
 
 
 @DATASET_REGISTRY.register()
@@ -79,9 +80,9 @@ class BRACS(DatasetBase):
         train = self._rebase_paths(train_raw, self.train_dir)
         val = self._rebase_paths(val_raw, self.val_dir)  # Val samples go to val/ folder
         
-        # Convert class names to descriptive format
-        train = self._convert_classnames(train)
-        val = self._convert_classnames(val)
+        # NOTE: Class name conversion commented out to match Tien's original setup
+        # train = self._convert_classnames(train)
+        # val = self._convert_classnames(val)
         
         # Load FULL test set from test/ folder (NOT from pickle - test uses ALL images in test/)
         print(f"\n[DEBUG] Loading full test set from: {self.test_dir}")
@@ -159,7 +160,8 @@ class BRACS(DatasetBase):
         converted = []
         for datum in data_list:
             old_classname = datum._classname
-            new_classname = NEW_CNAMES.get(old_classname, old_classname)
+            # new_classname = NEW_CNAMES.get(old_classname, old_classname)  # Commented out - Tien uses raw names
+            new_classname = old_classname
             
             converted.append(Datum(
                 impath=datum._impath,
@@ -179,8 +181,8 @@ class BRACS(DatasetBase):
             category_dir = os.path.join(test_dir, category)
             images = listdir_nohidden(category_dir)
             
-            # Convert class name
-            classname = NEW_CNAMES.get(category, category)
+            # classname = NEW_CNAMES.get(category, category)  # Commented out - Tien uses raw names
+            classname = category
             
             for im in images:
                 impath = os.path.join(category_dir, im)

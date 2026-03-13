@@ -2,6 +2,9 @@ import pickle
 import argparse
 import os
 
+# Command to look at an old pickle file:
+# python view_pickle_paths.py "E:\BachelorThesis\Data\data(3)\data\LungHist700\split_fewshot_ga\shot_4-seed_11111.pkl"
+
 # Import dassl to properly unpickle Datum objects
 try:
     from dassl.data.datasets import Datum

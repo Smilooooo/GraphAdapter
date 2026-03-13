@@ -31,7 +31,9 @@ def parse_ensemble_results(results_file):
         
         results = {
             'individual': {},
-            'ensemble': None
+            'ensemble_hard': None,
+            'ensemble_soft': None,
+            'ensemble': None,  # backward compat: same as ensemble_hard
         }
         
         # Parse individual accuracies
@@ -46,7 +48,16 @@ def parse_ensemble_results(results_file):
                 parts = line.split(':')
                 if len(parts) >= 2:
                     acc_str = parts[-1].strip().replace('%', '')
-                    results['ensemble'] = float(acc_str)
+                    acc_val = float(acc_str)
+                    if 'majority voting' in line.lower():
+                        results['ensemble_hard'] = acc_val
+                        results['ensemble'] = acc_val  # backward compat
+                    elif 'probability averaging' in line.lower():
+                        results['ensemble_soft'] = acc_val
+                    else:
+                        # Fallback for old format
+                        results['ensemble_hard'] = acc_val
+                        results['ensemble'] = acc_val
             elif in_individual_section and ':' in line:
                 # Parse individual line like "  biomedclip: 62.32%"
                 parts = line.strip().split(':')
@@ -135,29 +146,52 @@ def aggregate_results(args, all_results):
             print(f"  {backbone:15s}: No valid results")
             individual_aggregated[backbone] = None
     
-    # Aggregate ensemble results
+    # Aggregate hard ensemble results (majority voting)
     print("\nEnsemble (Majority Voting):")
-    ensemble_accuracies = [r['results']['ensemble'] for r in all_results 
-                          if r['results'] and r['results']['ensemble'] is not None]
+    hard_accuracies = [r['results']['ensemble_hard'] for r in all_results 
+                       if r['results'] and r['results'].get('ensemble_hard') is not None]
+    # Fallback to old 'ensemble' key
+    if not hard_accuracies:
+        hard_accuracies = [r['results']['ensemble'] for r in all_results 
+                           if r['results'] and r['results'].get('ensemble') is not None]
     
-    if len(ensemble_accuracies) > 0:
-        mean_acc = np.mean(ensemble_accuracies)
-        std_acc = np.std(ensemble_accuracies)
-        ensemble_aggregated = {
+    if len(hard_accuracies) > 0:
+        mean_acc = np.mean(hard_accuracies)
+        std_acc = np.std(hard_accuracies)
+        hard_aggregated = {
             'mean': mean_acc,
             'std': std_acc,
-            'accuracies': ensemble_accuracies,
-            'n_seeds': len(ensemble_accuracies)
+            'accuracies': hard_accuracies,
+            'n_seeds': len(hard_accuracies)
         }
-        print(f"  Ensemble        : {mean_acc:.2f}% ± {std_acc:.2f}%  (n={len(ensemble_accuracies)})")
+        print(f"  Ensemble        : {mean_acc:.2f}% ± {std_acc:.2f}%  (n={len(hard_accuracies)})")
     else:
         print(f"  Ensemble        : No valid results")
-        ensemble_aggregated = None
+        hard_aggregated = None
     
-    return individual_aggregated, ensemble_aggregated
+    # Aggregate soft ensemble results (probability averaging)
+    print("\nEnsemble (Probability Averaging):")
+    soft_accuracies = [r['results']['ensemble_soft'] for r in all_results 
+                       if r['results'] and r['results'].get('ensemble_soft') is not None]
+    
+    if len(soft_accuracies) > 0:
+        mean_acc = np.mean(soft_accuracies)
+        std_acc = np.std(soft_accuracies)
+        soft_aggregated = {
+            'mean': mean_acc,
+            'std': std_acc,
+            'accuracies': soft_accuracies,
+            'n_seeds': len(soft_accuracies)
+        }
+        print(f"  Ensemble        : {mean_acc:.2f}% ± {std_acc:.2f}%  (n={len(soft_accuracies)})")
+    else:
+        print(f"  Ensemble        : No valid results")
+        soft_aggregated = None
+    
+    return individual_aggregated, hard_aggregated, soft_aggregated
 
 
-def save_summary(args, all_results, individual_agg, ensemble_agg, output_file):
+def save_summary(args, all_results, individual_agg, hard_agg, soft_agg, output_file):
     """Save results summary to file."""
     with open(output_file, 'w') as f:
         f.write("="*70 + "\n")
@@ -180,8 +214,12 @@ def save_summary(args, all_results, individual_agg, ensemble_agg, output_file):
                     if backbone in r['results']['individual']:
                         acc = r['results']['individual'][backbone]
                         f.write(f"    {backbone:15s}: {acc:.2f}%\n")
-                if r['results']['ensemble']:
-                    f.write(f"  Ensemble          : {r['results']['ensemble']:.2f}%\n")
+                hard = r['results'].get('ensemble_hard') or r['results'].get('ensemble')
+                soft = r['results'].get('ensemble_soft')
+                if hard is not None:
+                    f.write(f"  Ensemble (majority vote) : {hard:.2f}%\n")
+                if soft is not None:
+                    f.write(f"  Ensemble (prob. average) : {soft:.2f}%\n")
             else:
                 f.write(f"  FAILED\n")
             f.write(f"  Output: {r['output_dir']}\n\n")
@@ -200,9 +238,16 @@ def save_summary(args, all_results, individual_agg, ensemble_agg, output_file):
                 f.write(f"  {backbone:15s}: No valid results\n")
         
         f.write("\nEnsemble (Majority Voting):\n")
-        if ensemble_agg:
-            f.write(f"  Ensemble        : {ensemble_agg['mean']:.2f}% ± {ensemble_agg['std']:.2f}%  (n={ensemble_agg['n_seeds']})\n")
-            f.write(f"                    Individual: {', '.join([f'{a:.2f}%' for a in ensemble_agg['accuracies']])}\n")
+        if hard_agg:
+            f.write(f"  Ensemble        : {hard_agg['mean']:.2f}% ± {hard_agg['std']:.2f}%  (n={hard_agg['n_seeds']})\n")
+            f.write(f"                    Individual: {', '.join([f'{a:.2f}%' for a in hard_agg['accuracies']])}\n")
+        else:
+            f.write(f"  Ensemble        : No valid results\n")
+        
+        f.write("\nEnsemble (Probability Averaging):\n")
+        if soft_agg:
+            f.write(f"  Ensemble        : {soft_agg['mean']:.2f}% ± {soft_agg['std']:.2f}%  (n={soft_agg['n_seeds']})\n")
+            f.write(f"                    Individual: {', '.join([f'{a:.2f}%' for a in soft_agg['accuracies']])}\n")
         else:
             f.write(f"  Ensemble        : No valid results\n")
     
@@ -265,12 +310,12 @@ def main():
     print(f"Completed {len(args.seeds)} ensemble experiments")
     print(f"{'='*70}")
     
-    individual_agg, ensemble_agg = aggregate_results(args, all_results)
+    individual_agg, hard_agg, soft_agg = aggregate_results(args, all_results)
     
     # Save summary
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     summary_file = os.path.join(args.output_base, f"ensemble_summary_{timestamp}.txt")
-    save_summary(args, all_results, individual_agg, ensemble_agg, summary_file)
+    save_summary(args, all_results, individual_agg, hard_agg, soft_agg, summary_file)
     
     # Save as JSON
     json_file = os.path.join(args.output_base, f"ensemble_results_{timestamp}.json")
@@ -280,7 +325,9 @@ def main():
             'all_results': all_results,
             'aggregated': {
                 'individual': {k: v for k, v in individual_agg.items() if v},
-                'ensemble': ensemble_agg
+                'ensemble_hard': hard_agg,
+                'ensemble_soft': soft_agg,
+                'ensemble': hard_agg  # backward compat
             }
         }, f, indent=2)
     print(f"JSON results saved to: {json_file}")

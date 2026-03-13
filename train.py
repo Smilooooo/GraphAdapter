@@ -23,6 +23,8 @@ import datasets.imagenetv2
 import datasets.imagenet_a
 import datasets.imagenet_r
 import datasets.lungHist700
+import datasets.lungHist700_tien
+import datasets.lungHist700_tien_descriptive
 import datasets.bracs
 import datasets.iciar2018
 

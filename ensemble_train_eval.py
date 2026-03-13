@@ -36,6 +36,8 @@ from dassl.data import DataManager
 
 # Import custom modules to register them
 import datasets.lungHist700
+import datasets.lungHist700_tien
+import datasets.lungHist700_tien_descriptive
 import datasets.bracs
 import datasets.iciar2018
 import trainers.baseclip_graph_v2
@@ -51,6 +53,10 @@ BACKBONE_CONFIGS = {
     "biomedclip": "configs/trainers/GraphCLIP_v2/biomedclip.yaml",
     "plip": "configs/trainers/GraphCLIP_v2/plip.yaml",
     "conch": "configs/trainers/GraphCLIP_v2/conch.yaml",
+    # Tien's original settings (adam, LR=0.0002, 200 epochs, 224x224, batch 47)
+    "biomedclip_tien": "configs/trainers/GraphCLIP_v2/biomedclip_tien.yaml",
+    "plip_tien": "configs/trainers/GraphCLIP_v2/plip_tien.yaml",
+    "conch_tien": "configs/trainers/GraphCLIP_v2/conch_tien.yaml",
 }
 
 
@@ -185,6 +191,8 @@ def evaluate_ensemble(trained_models, args):
     model_all_preds = {tm["backbone"]: [] for tm in trained_models}
     model_all_labels = {tm["backbone"]: [] for tm in trained_models}
     
+    model_all_logits = {tm["backbone"]: [] for tm in trained_models}
+    
     for trainer, tm in zip(trainers, trained_models):
         print(f"  Evaluating {tm['backbone']} with its test loader...")
         with torch.no_grad():
@@ -195,9 +203,11 @@ def evaluate_ensemble(trained_models, args):
                 preds = logits.argmax(dim=1)
                 model_all_preds[tm["backbone"]].append(preds.cpu())
                 model_all_labels[tm["backbone"]].append(labels.cpu())
+                model_all_logits[tm["backbone"]].append(logits.cpu())
         
         model_all_preds[tm["backbone"]] = torch.cat(model_all_preds[tm["backbone"]])
         model_all_labels[tm["backbone"]] = torch.cat(model_all_labels[tm["backbone"]])
+        model_all_logits[tm["backbone"]] = torch.cat(model_all_logits[tm["backbone"]])
     
     # Verify all models evaluated same samples (labels should match)
     reference_labels = model_all_labels[trained_models[0]["backbone"]]
@@ -222,8 +232,19 @@ def evaluate_ensemble(trained_models, args):
     all_ensemble_preds = torch.stack(all_ensemble_preds)
     individual_preds = model_all_preds
     
-    # Compute accuracies
-    ensemble_acc = (all_ensemble_preds == all_labels).float().mean().item() * 100
+    # Compute hard ensemble (majority voting) accuracy
+    hard_ensemble_acc = (all_ensemble_preds == all_labels).float().mean().item() * 100
+    
+    # Compute soft ensemble (probability averaging) accuracy
+    print("  Computing soft ensemble (probability averaging)...")
+    probs_dict = {}
+    for tm in trained_models:
+        logits = model_all_logits[tm["backbone"]]
+        probs_dict[tm["backbone"]] = F.softmax(logits, dim=1)
+    
+    avg_probs = torch.stack([probs_dict[b] for b in probs_dict]).mean(dim=0)
+    soft_ensemble_preds = avg_probs.argmax(dim=1)
+    soft_ensemble_acc = (soft_ensemble_preds == all_labels).float().mean().item() * 100
     
     # Individual accuracies
     individual_accs = {}
@@ -231,7 +252,7 @@ def evaluate_ensemble(trained_models, args):
         acc = (preds == all_labels).float().mean().item() * 100
         individual_accs[backbone] = acc
     
-    return ensemble_acc, individual_accs
+    return hard_ensemble_acc, soft_ensemble_acc, individual_accs
 
 
 def main(args):
@@ -262,7 +283,7 @@ def main(args):
     print("Preparing for ensemble evaluation...")
     
     # Evaluate ensemble
-    ensemble_acc, individual_accs = evaluate_ensemble(trained_models, args)
+    hard_acc, soft_acc, individual_accs = evaluate_ensemble(trained_models, args)
     
     # Print and save results
     print(f"\n{'='*60}")
@@ -272,7 +293,8 @@ def main(args):
     for backbone, acc in individual_accs.items():
         print(f"  {backbone:15s}: {acc:.2f}%")
     
-    print(f"\nEnsemble Accuracy (majority voting): {ensemble_acc:.2f}%")
+    print(f"\nEnsemble Accuracy (majority voting):        {hard_acc:.2f}%")
+    print(f"Ensemble Accuracy (probability averaging):   {soft_acc:.2f}%")
     
     # Save results to file
     results_path = os.path.join(args.output_dir, "ensemble_results.txt")
@@ -286,11 +308,12 @@ def main(args):
         f.write(f"\nIndividual Accuracies:\n")
         for backbone, acc in individual_accs.items():
             f.write(f"  {backbone}: {acc:.2f}%\n")
-        f.write(f"\nEnsemble Accuracy (majority voting): {ensemble_acc:.2f}%\n")
+        f.write(f"\nEnsemble Accuracy (majority voting): {hard_acc:.2f}%\n")
+        f.write(f"Ensemble Accuracy (probability averaging): {soft_acc:.2f}%\n")
     
     print(f"\nResults saved to: {results_path}")
     
-    return ensemble_acc, individual_accs
+    return hard_acc, soft_acc, individual_accs
 
 
 if __name__ == "__main__":
